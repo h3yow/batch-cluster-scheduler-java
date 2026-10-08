@@ -13,5 +13,11 @@ public enum RejectionReason {
     /** referenced job does not exist. */
     JOB_NOT_FOUND,
     /** referenced node does not exist. */
-    NODE_NOT_FOUND
+    NODE_NOT_FOUND,
+    /** a job declared a dependency on itself. */
+    SELF_DEPENDENCY,
+    /** the declared dependencies form a cycle. */
+    DEPENDENCY_CYCLE,
+    /** a declared dependency references a job that does not exist. */
+    DEPENDENCY_NOT_FOUND
 }

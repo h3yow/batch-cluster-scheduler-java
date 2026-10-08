@@ -71,4 +71,53 @@ class RestApiTest {
         assertNotNull(fetched.getBody().status());
         System.out.println("[result] GET job status=" + fetched.getBody().status());
     }
+
+    @Test
+    void groupSubmitReplayAndDependencyRejection() {
+        Map<String, Object> memberA = Map.of("name", "a",
+                "resources", Map.of("cpuMillis", 500, "memoryMb", 512),
+                "priority", 1, "maxRetries", 0, "timeoutMillis", 0,
+                "dependsOn", java.util.List.of());
+        Map<String, Object> memberB = Map.of("name", "b",
+                "resources", Map.of("cpuMillis", 500, "memoryMb", 512),
+                "priority", 1, "maxRetries", 0, "timeoutMillis", 0,
+                "dependsOn", java.util.List.of("a"));
+        Map<String, Object> group = Map.of("groupKey", "rest-group",
+                "members", java.util.List.of(memberA, memberB));
+        System.out.println("[input] POST /api/jobs/group " + group);
+
+        ResponseEntity<JobView[]> created = rest.postForEntity("/api/jobs/group", group, JobView[].class);
+        assertEquals(HttpStatus.CREATED, created.getStatusCode());
+        assertEquals(2, created.getBody().length);
+        System.out.println("[result] group created, member statuses="
+                + created.getBody()[0].status() + "," + created.getBody()[1].status()
+                + " b.dependsOn=" + created.getBody()[1].dependsOn());
+
+        ResponseEntity<JobView[]> replay = rest.postForEntity("/api/jobs/group", group, JobView[].class);
+        assertEquals(HttpStatus.OK, replay.getStatusCode(), "identical group resubmit is a replay");
+        assertEquals(created.getBody()[1].id(), replay.getBody()[1].id());
+
+        Map<String, Object> cyclic = Map.of("groupKey", "rest-cyclic",
+                "members", java.util.List.of(
+                        Map.of("name", "x", "resources", Map.of("cpuMillis", 100, "memoryMb", 100),
+                                "priority", 1, "maxRetries", 0, "timeoutMillis", 0,
+                                "dependsOn", java.util.List.of("y")),
+                        Map.of("name", "y", "resources", Map.of("cpuMillis", 100, "memoryMb", 100),
+                                "priority", 1, "maxRetries", 0, "timeoutMillis", 0,
+                                "dependsOn", java.util.List.of("x"))));
+        ResponseEntity<Map> rejected = rest.postForEntity("/api/jobs/group", cyclic, Map.class);
+        System.out.println("[decision] cyclic group -> " + rejected.getStatusCode() + " " + rejected.getBody());
+        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, rejected.getStatusCode());
+        assertEquals(RejectionReason.DEPENDENCY_CYCLE.name(), rejected.getBody().get("reason"));
+
+        Map<String, Object> dangling = Map.of(
+                "idempotencyKey", "rest-dangling",
+                "resources", Map.of("cpuMillis", 100, "memoryMb", 100),
+                "priority", 1, "maxRetries", 0, "timeoutMillis", 0,
+                "dependsOn", java.util.List.of("no-such-job"));
+        ResponseEntity<Map> missing = rest.postForEntity("/api/jobs", dangling, Map.class);
+        System.out.println("[decision] dangling dep -> " + missing.getStatusCode() + " " + missing.getBody());
+        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, missing.getStatusCode());
+        assertEquals(RejectionReason.DEPENDENCY_NOT_FOUND.name(), missing.getBody().get("reason"));
+    }
 }

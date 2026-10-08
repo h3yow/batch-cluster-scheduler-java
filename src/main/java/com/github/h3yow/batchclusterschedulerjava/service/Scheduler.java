@@ -49,8 +49,9 @@ public class Scheduler {
         this.agingIntervalMillis = agingIntervalMillis;
     }
 
-    /** One scheduling pass: try to place queued jobs onto up nodes. */
+    /** One scheduling pass: resolve dependencies, then place queued jobs onto up nodes. */
     public synchronized void scheduleOnce() {
+        evaluateDependencies();
         List<Job> queued = jobStore.all().stream()
                 .filter(j -> j.getStatus() == JobStatus.QUEUED)
                 .toList();
@@ -58,7 +59,7 @@ public class Scheduler {
             return;
         }
         for (Job j : queued) {
-            long waited = Duration.between(j.getCreatedAt(), clock.instant()).toMillis();
+            long waited = Duration.between(j.getQueuedAt(), clock.instant()).toMillis();
             j.setEffectivePriority(j.getPriority() + waited / agingIntervalMillis);
         }
         List<Job> sorted = queued.stream()
@@ -150,13 +151,14 @@ public class Scheduler {
         log("NODE_UP node=%s", nodeId);
     }
 
-    /** Cancel a queued or running job; terminal jobs are rejected. */
+    /** Cancel a queued, waiting or running job; terminal jobs are rejected. */
     public synchronized void cancel(Job job) {
         switch (job.getStatus()) {
-            case QUEUED -> {
+            case QUEUED, WAITING_DEPENDENCIES -> {
+                JobStatus from = job.getStatus();
                 transition(job, JobStatus.CANCELLED);
                 job.setFinishedAt(clock.instant());
-                log("CANCELLED job=%s from=QUEUED", job.getId());
+                log("CANCELLED job=%s from=%s", job.getId(), from);
             }
             case RUNNING -> {
                 executor.cancelExecution(job.getId());
@@ -168,6 +170,63 @@ public class Scheduler {
             }
             default -> throw new JobRejectedException(RejectionReason.ILLEGAL_STATE_TRANSITION,
                     "cannot cancel job " + job.getId() + " in terminal state " + job.getStatus());
+        }
+    }
+
+    /**
+     * Recovery pass after a restart: re-evaluate every waiting dependency
+     * against the (surviving) job store and schedule whatever became
+     * runnable. Terminal conclusions are never touched, so already-finished
+     * jobs keep their verdict and nothing is executed twice.
+     */
+    public synchronized void recover() {
+        log("RECOVER begin");
+        scheduleOnce();
+        log("RECOVER end");
+    }
+
+    /**
+     * Resolve jobs parked in WAITING_DEPENDENCIES: all dependencies
+     * SUCCEEDED -> QUEUED (aging restarts from now); any dependency reached
+     * a failure terminal (CANCELLED / SKIPPED_DEPENDENCY_FAILED / FAILED
+     * with retries exhausted) -> SKIPPED_DEPENDENCY_FAILED with the cause.
+     */
+    private void evaluateDependencies() {
+        for (Job job : jobStore.all()) {
+            if (job.getStatus() != JobStatus.WAITING_DEPENDENCIES) {
+                continue;
+            }
+            Job failedDep = null;
+            boolean allSucceeded = true;
+            for (String depId : job.getDependsOn()) {
+                Job dep = jobStore.findById(depId).orElse(null);
+                if (dep == null) {
+                    // cannot happen: existence is validated at submit time
+                    throw new IllegalStateException("dependency vanished: " + depId);
+                }
+                boolean depFailedFinally = dep.getStatus() == JobStatus.CANCELLED
+                        || dep.getStatus() == JobStatus.SKIPPED_DEPENDENCY_FAILED
+                        || (dep.getStatus() == JobStatus.FAILED && dep.getFinishedAt() != null);
+                if (depFailedFinally) {
+                    failedDep = dep;
+                    break;
+                }
+                if (dep.getStatus() != JobStatus.SUCCEEDED) {
+                    allSucceeded = false;
+                }
+            }
+            if (failedDep != null) {
+                transition(job, JobStatus.SKIPPED_DEPENDENCY_FAILED);
+                job.setFinishedAt(clock.instant());
+                job.setLastFailureReason("DEPENDENCY_FAILED dep=" + failedDep.getId()
+                        + " depStatus=" + failedDep.getStatus());
+                log("SKIP job=%s reason=DEPENDENCY_FAILED dep=%s depStatus=%s",
+                        job.getId(), failedDep.getId(), failedDep.getStatus());
+            } else if (allSucceeded) {
+                transition(job, JobStatus.QUEUED);
+                job.setQueuedAt(clock.instant());
+                log("DEPENDENCIES_SATISFIED job=%s deps=%s", job.getId(), job.getDependsOn());
+            }
         }
     }
 
