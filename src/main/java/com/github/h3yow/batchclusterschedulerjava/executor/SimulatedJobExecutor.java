@@ -65,6 +65,17 @@ public class SimulatedJobExecutor implements JobExecutor {
         dispatchTokens.remove(jobId);
     }
 
+    /**
+     * Invalidate every in-flight dispatch at once. Called on restart recovery:
+     * execution state lives only inside the process, so all virtual threads
+     * started by the previous incarnation must be treated as dead and their
+     * (possibly late) completion callbacks must never reach the scheduler.
+     */
+    public synchronized void invalidateAllDispatches() {
+        cancelled.addAll(dispatchTokens.keySet());
+        dispatchTokens.clear();
+    }
+
     /** Register a deterministic body for a job id (test hook). */
     public void setBody(String jobId, JobBody body) {
         bodies.put(jobId, body);

@@ -71,4 +71,59 @@ class RestApiTest {
         assertNotNull(fetched.getBody().status());
         System.out.println("[result] GET job status=" + fetched.getBody().status());
     }
+
+    @Test
+    void batchGraphSubmitReplayAndStructuralRejections() {
+        Map<String, Object> member = java.util.Map.of(
+                "key", "m1",
+                "resources", Map.of("cpuMillis", 100, "memoryMb", 64),
+                "priority", 1, "maxRetries", 0, "timeoutMillis", 0,
+                "dependsOn", java.util.List.of());
+        Map<String, Object> member2 = java.util.Map.of(
+                "key", "m2",
+                "resources", Map.of("cpuMillis", 100, "memoryMb", 64),
+                "priority", 1, "maxRetries", 0, "timeoutMillis", 0,
+                "dependsOn", java.util.List.of("m1"));
+        Map<String, Object> batch = Map.of("idempotencyKey", "rest-batch",
+                "jobs", java.util.List.of(member, member2));
+        System.out.println("[input] POST /api/jobs/batch " + batch);
+
+        @SuppressWarnings("rawtypes")
+        ResponseEntity<Map> created = rest.postForEntity("/api/jobs/batch", batch, Map.class);
+        assertEquals(HttpStatus.CREATED, created.getStatusCode());
+        System.out.println("[result] batch created " + created.getBody());
+
+        @SuppressWarnings("rawtypes")
+        ResponseEntity<Map> replay = rest.postForEntity("/api/jobs/batch", batch, Map.class);
+        assertEquals(HttpStatus.OK, replay.getStatusCode(), "identical batch replays");
+
+        // cyclic graph rejected structurally
+        Map<String, Object> cycA = Map.of("key", "a",
+                "resources", Map.of("cpuMillis", 100, "memoryMb", 64),
+                "priority", 1, "maxRetries", 0, "timeoutMillis", 0,
+                "dependsOn", java.util.List.of("b"));
+        Map<String, Object> cycB = Map.of("key", "b",
+                "resources", Map.of("cpuMillis", 100, "memoryMb", 64),
+                "priority", 1, "maxRetries", 0, "timeoutMillis", 0,
+                "dependsOn", java.util.List.of("a"));
+        Map<String, Object> cyclic = Map.of("idempotencyKey", "rest-cyclic",
+                "jobs", java.util.List.of(cycA, cycB));
+        @SuppressWarnings("rawtypes")
+        ResponseEntity<Map> rejected = rest.postForEntity("/api/jobs/batch", cyclic, Map.class);
+        System.out.println("[decision] cycle -> " + rejected.getStatusCode() + " " + rejected.getBody());
+        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, rejected.getStatusCode());
+        assertEquals(RejectionReason.DEPENDENCY_CYCLE.name(), rejected.getBody().get("reason"));
+
+        // single submit with a dependency on a missing job id -> 404 distinct reason
+        Map<String, Object> dangling = Map.of(
+                "idempotencyKey", "rest-dangling",
+                "resources", Map.of("cpuMillis", 100, "memoryMb", 64),
+                "priority", 1, "maxRetries", 0, "timeoutMillis", 0,
+                "dependencies", java.util.List.of("ghost"));
+        @SuppressWarnings("rawtypes")
+        ResponseEntity<Map> notFound = rest.postForEntity("/api/jobs", dangling, Map.class);
+        assertEquals(HttpStatus.NOT_FOUND, notFound.getStatusCode());
+        assertEquals(RejectionReason.DEPENDENCY_NOT_FOUND.name(), notFound.getBody().get("reason"));
+        System.out.println("[decision] missing dependency -> " + notFound.getStatusCode());
+    }
 }

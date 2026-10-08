@@ -1,5 +1,7 @@
 package com.github.h3yow.batchclusterschedulerjava.controller;
 
+import com.github.h3yow.batchclusterschedulerjava.api.BatchSubmitRequest;
+import com.github.h3yow.batchclusterschedulerjava.api.BatchSubmitResult;
 import com.github.h3yow.batchclusterschedulerjava.api.JobRejectedException;
 import com.github.h3yow.batchclusterschedulerjava.api.JobView;
 import com.github.h3yow.batchclusterschedulerjava.api.RejectionReason;
@@ -37,6 +39,14 @@ public class JobController {
         return ResponseEntity.status(status).body(JobView.of(result.job()));
     }
 
+    /** Submit a group of jobs with intra-group dependencies as one graph. */
+    @PostMapping("/batch")
+    public ResponseEntity<BatchSubmitResult> submitBatch(@RequestBody BatchSubmitRequest request) {
+        BatchSubmitResult result = jobService.submitBatch(request);
+        HttpStatus status = result.idempotentReplay() ? HttpStatus.OK : HttpStatus.CREATED;
+        return ResponseEntity.status(status).body(result);
+    }
+
     @GetMapping("/{jobId}")
     public JobView get(@PathVariable String jobId) {
         return jobService.get(jobId);
@@ -55,10 +65,10 @@ public class JobController {
     @ExceptionHandler(JobRejectedException.class)
     public ResponseEntity<Map<String, String>> onRejected(JobRejectedException e) {
         HttpStatus status = switch (e.getReason()) {
-            case RejectionReason.JOB_NOT_FOUND, RejectionReason.NODE_NOT_FOUND -> HttpStatus.NOT_FOUND;
-            case RejectionReason.IDEMPOTENCY_KEY_CONFLICT -> HttpStatus.CONFLICT;
-            case RejectionReason.QUOTA_EXCEEDED, RejectionReason.ILLEGAL_STATE_TRANSITION ->
-                    HttpStatus.UNPROCESSABLE_ENTITY;
+            case JOB_NOT_FOUND, NODE_NOT_FOUND, DEPENDENCY_NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case IDEMPOTENCY_KEY_CONFLICT -> HttpStatus.CONFLICT;
+            case QUOTA_EXCEEDED, ILLEGAL_STATE_TRANSITION, SELF_DEPENDENCY,
+                 DEPENDENCY_CYCLE, INVALID_BATCH -> HttpStatus.UNPROCESSABLE_ENTITY;
         };
         return ResponseEntity.status(status)
                 .body(Map.of("reason", e.getReason().name(), "message", e.getMessage()));

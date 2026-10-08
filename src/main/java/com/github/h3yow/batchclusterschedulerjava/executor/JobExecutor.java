@@ -15,6 +15,14 @@ public interface JobExecutor {
     /** Best-effort stop of a running execution (e.g. on cancel). */
     void cancelExecution(String jobId);
 
+    /**
+     * Void every in-flight dispatch. Used on restart recovery: executor state
+     * is process-local, so callbacks from the previous incarnation must never
+     * reach the freshly recovered scheduler.
+     */
+    default void invalidateAllDispatches() {
+    }
+
     interface CompletionCallback {
         void onComplete(Job job, boolean success, String failureReason);
     }

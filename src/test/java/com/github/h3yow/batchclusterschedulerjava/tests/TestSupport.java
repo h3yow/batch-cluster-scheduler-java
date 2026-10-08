@@ -3,11 +3,14 @@ package com.github.h3yow.batchclusterschedulerjava.tests;
 import com.github.h3yow.batchclusterschedulerjava.executor.SimulatedJobExecutor;
 import com.github.h3yow.batchclusterschedulerjava.model.ResourceSpec;
 import com.github.h3yow.batchclusterschedulerjava.model.WorkerNode;
+import com.github.h3yow.batchclusterschedulerjava.service.DependencyGraph;
 import com.github.h3yow.batchclusterschedulerjava.service.JobService;
 import com.github.h3yow.batchclusterschedulerjava.service.JobStore;
 import com.github.h3yow.batchclusterschedulerjava.service.NodeManager;
 import com.github.h3yow.batchclusterschedulerjava.service.Scheduler;
+import com.github.h3yow.batchclusterschedulerjava.service.SnapshotStore;
 
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.function.BooleanSupplier;
@@ -23,31 +26,52 @@ final class TestSupport {
     }
 
     record Stack(JobStore store, NodeManager nodes, SimulatedJobExecutor executor,
-                 Scheduler scheduler, JobService service) {
+                 Scheduler scheduler, JobService service, DependencyGraph graph,
+                 SnapshotStore snapshots) {
     }
 
     static Stack newStack(ResourceSpec nodeCapacity, int nodeCount) {
-        JobStore store = new JobStore();
-        NodeManager nodes = new NodeManager();
-        for (int i = 1; i <= nodeCount; i++) {
-            nodes.registerNode(new WorkerNode("node-" + i, nodeCapacity));
-        }
-        SimulatedJobExecutor executor = new SimulatedJobExecutor();
-        Scheduler scheduler = new Scheduler(store, nodes, executor);
-        JobService service = new JobService(store, nodes, scheduler, nodes.totalCapacity());
-        return new Stack(store, nodes, executor, scheduler, service);
+        return build(nodeCapacity, nodeCount, null, 0, null);
     }
 
     static Stack newStack(ResourceSpec nodeCapacity, int nodeCount, Clock clock, long agingMillis) {
+        return build(nodeCapacity, nodeCount, clock, agingMillis, null);
+    }
+
+    /** Stack with file-backed snapshots (restart-recovery tests). */
+    static Stack newPersistingStack(ResourceSpec nodeCapacity, int nodeCount, Path snapshotPath) {
+        return build(nodeCapacity, nodeCount, null, 0, snapshotPath);
+    }
+
+    /**
+     * Build a fresh stack wired to an existing snapshot file: on creation the
+     * scheduler adopts whatever state was persisted there (restart simulation).
+     */
+    static Stack restartedStack(ResourceSpec nodeCapacity, int nodeCount, Path snapshotPath) {
+        return build(nodeCapacity, nodeCount, null, 0, snapshotPath);
+    }
+
+    private static Stack build(ResourceSpec nodeCapacity, int nodeCount, Clock clock,
+                               long agingMillis, Path snapshotPath) {
         JobStore store = new JobStore();
         NodeManager nodes = new NodeManager();
         for (int i = 1; i <= nodeCount; i++) {
             nodes.registerNode(new WorkerNode("node-" + i, nodeCapacity));
         }
         SimulatedJobExecutor executor = new SimulatedJobExecutor();
-        Scheduler scheduler = new Scheduler(store, nodes, executor, clock, agingMillis);
-        JobService service = new JobService(store, nodes, scheduler, nodes.totalCapacity(), clock);
-        return new Stack(store, nodes, executor, scheduler, service);
+        DependencyGraph graph = new DependencyGraph();
+        SnapshotStore snapshots = new SnapshotStore(snapshotPath);
+        Scheduler scheduler = clock == null
+                ? new Scheduler(store, nodes, executor)
+                : new Scheduler(store, nodes, executor, clock, agingMillis);
+        scheduler.setDependencyGraph(graph);
+        scheduler.setSnapshotStore(snapshots);
+        JobService service = clock == null
+                ? new JobService(store, nodes, scheduler, nodes.totalCapacity(),
+                        Clock.systemUTC(), graph)
+                : new JobService(store, nodes, scheduler, nodes.totalCapacity(), clock, graph);
+        scheduler.recover();
+        return new Stack(store, nodes, executor, scheduler, service, graph, snapshots);
     }
 
     /** A clock tests can advance manually (for aging / timeout scenarios). */
@@ -83,5 +107,15 @@ final class TestSupport {
             }
         }
         fail("timed out awaiting: " + what);
+    }
+
+    /** Wait until the snapshot file on durable storage contains the given job status. */
+    static void awaitSnapshotContains(Stack s, String jobId,
+                                      java.util.function.Predicate<com.github.h3yow.batchclusterschedulerjava.model.Job> pred) {
+        await("durable snapshot reflects job " + jobId, () ->
+                s.snapshots().load().map(shot -> shot.jobs().stream()
+                        .filter(j -> j.getId().equals(jobId))
+                        .findFirst()
+                        .map(pred::test).orElse(false)).orElse(false));
     }
 }

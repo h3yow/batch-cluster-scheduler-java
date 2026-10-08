@@ -23,9 +23,19 @@ public class Job {
     private Instant finishedAt;
     private String lastFailureReason;
     private long effectivePriority;      // priority + aging boost, maintained by scheduler
+    private Instant queuedAt;           // aging baseline; set whenever the job enters QUEUED
 
     public Job(String id, String idempotencyKey, ResourceSpec resources,
                int priority, int maxRetries, long timeoutMillis, Instant createdAt) {
+        this(id, idempotencyKey, resources, priority, maxRetries, timeoutMillis,
+                createdAt, JobStatus.QUEUED, 0, null, null, null, null);
+    }
+
+    /** Full constructor used for fresh BLOCKED submissions and snapshot restore. */
+    public Job(String id, String idempotencyKey, ResourceSpec resources,
+               int priority, int maxRetries, long timeoutMillis, Instant createdAt,
+               JobStatus status, int attempt, String nodeId, Instant startedAt,
+               Instant finishedAt, String lastFailureReason) {
         this.id = id;
         this.idempotencyKey = idempotencyKey;
         this.resources = resources;
@@ -33,8 +43,13 @@ public class Job {
         this.maxRetries = maxRetries;
         this.timeoutMillis = timeoutMillis;
         this.createdAt = createdAt;
-        this.status = JobStatus.QUEUED;
-        this.attempt = 0;
+        this.status = status;
+        this.attempt = attempt;
+        this.nodeId = nodeId;
+        this.startedAt = startedAt;
+        this.finishedAt = finishedAt;
+        this.lastFailureReason = lastFailureReason;
+        this.queuedAt = createdAt;
     }
 
     public String getId() { return id; }
@@ -51,6 +66,7 @@ public class Job {
     public Instant getFinishedAt() { return finishedAt; }
     public String getLastFailureReason() { return lastFailureReason; }
     public long getEffectivePriority() { return effectivePriority; }
+    public Instant getQueuedAt() { return queuedAt; }
 
     public void setStatus(JobStatus status) { this.status = status; }
     public void setAttempt(int attempt) { this.attempt = attempt; }
@@ -59,4 +75,5 @@ public class Job {
     public void setFinishedAt(Instant finishedAt) { this.finishedAt = finishedAt; }
     public void setLastFailureReason(String reason) { this.lastFailureReason = reason; }
     public void setEffectivePriority(long effectivePriority) { this.effectivePriority = effectivePriority; }
+    public void setQueuedAt(Instant queuedAt) { this.queuedAt = queuedAt; }
 }

@@ -13,5 +13,13 @@ public enum RejectionReason {
     /** referenced job does not exist. */
     JOB_NOT_FOUND,
     /** referenced node does not exist. */
-    NODE_NOT_FOUND
+    NODE_NOT_FOUND,
+    /** a job declares itself as its own prerequisite. */
+    SELF_DEPENDENCY,
+    /** the dependency edges contain a cycle. */
+    DEPENDENCY_CYCLE,
+    /** a prerequisite references a job id / batch key that does not exist. */
+    DEPENDENCY_NOT_FOUND,
+    /** malformed batch (empty, duplicate member keys, ...). */
+    INVALID_BATCH
 }
